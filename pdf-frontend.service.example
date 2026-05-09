@@ -1,0 +1,16 @@
+[Unit]
+Description=PDF Sign Frontend Server (Vite)
+After=network.target
+
+[Service]
+# 请根据实际情况修改执行用户
+User=wwf
+# 请修改为项目的实际安装路径
+WorkingDirectory=/mnt/raid/pdfsign/client
+# 启动命令 (--host 确保可以被 Nginx 反代)
+ExecStart=/usr/bin/npm run dev -- --host
+# 失败自动重启
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

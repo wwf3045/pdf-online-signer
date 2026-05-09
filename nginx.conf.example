@@ -1,0 +1,58 @@
+server {
+    listen 80;
+    server_name your-domain.com; # 替换为你的域名
+    return 301 https://$host$request_uri; # 强制跳转 HTTPS
+}
+
+server {
+    listen 443 ssl;
+    server_name your-domain.com; # 替换为你的域名
+
+    # SSL 证书路径 (请替换为你的实际路径)
+    ssl_certificate     /etc/nginx/cert/fullchain.cer;
+    ssl_certificate_key /etc/nginx/cert/key.pem;
+
+    # 安全配置
+    ssl_session_timeout 5m;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    # 关键：支持大文件上传，否则大 PDF 会报错 413
+    client_max_body_size 50M;
+
+    # 1. 前端页面 (Vite 开发服务器或静态文件)
+    location / {
+        proxy_pass http://127.0.0.1:5173;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+    # 2. 后端 API 接口
+    location /api/ {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # 3. Socket.io (实现手机/电脑同步必须)
+    location /socket.io/ {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # 关闭缓存以降低延迟
+        proxy_buffering off;
+    }
+}

@@ -385,6 +385,7 @@ export default function App() {
 
       if (uploadRes.ok) {
         alert('恭喜！签名已成功合成并提交至飞书多维表格。');
+        resetUpload(); // Files are deleted on server, reset local state
       } else {
         const error = await uploadRes.json();
         throw new Error(error.error || '回传飞书失败');
@@ -423,16 +424,18 @@ export default function App() {
       if (response.ok) {
         const { id: signedId } = await response.json();
         
-        // Trigger local download for user
-        const fileRes = await fetch(`${API_BASE}/api/uploads/${signedId}`);
-        const blob = await fileRes.blob();
-        const url = window.URL.createObjectURL(blob);
+        // Trigger local download using the new cleanup endpoint
+        const downloadUrl = `${API_BASE}/api/download/${signedId}`;
         const a = document.createElement('a');
-        a.href = url;
-        a.download = `已签名-${file?.name || '文档.pdf'}`;
+        a.href = downloadUrl;
         document.body.appendChild(a);
         a.click();
-        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        
+        // Files are deleted on server after download, reset local state
+        setTimeout(() => {
+          resetUpload();
+        }, 1000); // Small delay to ensure download starts
       } else {
         alert('签名 PDF 失败');
       }
@@ -734,8 +737,8 @@ function PDFPage({ pdfDoc, pageIndex, placedSignatures, setPlacedSignatures, all
             key={ps.id}
             size={{ width, height }}
             position={{ x, y }}
-            onDragStop={(e, d) => updatePlacedSignature(ps.id, { xPercent: (d.x / renderDimensions.width) * 100, yPercent: (d.y / renderDimensions.height) * 100 })}
-            onResizeStop={(e, dir, ref, delta, pos) => updatePlacedSignature(ps.id, { widthPercent: (parseInt(ref.style.width) / renderDimensions.width) * 100, heightPercent: (parseInt(ref.style.height) / renderDimensions.height) * 100, xPercent: (pos.x / renderDimensions.width) * 100, yPercent: (pos.y / renderDimensions.height) * 100 })}
+            onDragStop={(_, d) => updatePlacedSignature(ps.id, { xPercent: (d.x / renderDimensions.width) * 100, yPercent: (d.y / renderDimensions.height) * 100 })}
+            onResizeStop={(_e, _dir, ref, _delta, pos) => updatePlacedSignature(ps.id, { widthPercent: (parseInt(ref.style.width) / renderDimensions.width) * 100, heightPercent: (parseInt(ref.style.height) / renderDimensions.height) * 100, xPercent: (pos.x / renderDimensions.width) * 100, yPercent: (pos.y / renderDimensions.height) * 100 })}
             bounds="parent"
             lockAspectRatio={true}
             className="group z-10"

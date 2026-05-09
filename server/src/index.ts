@@ -156,12 +156,43 @@ app.post('/api/lark/fetch', async (req, res) => {
 });
 
 /**
+ * Helper to delete a file and its original counterpart if it's a signed file
+ */
+function cleanupFiles(fileId: string) {
+  try {
+    const filePath = path.join(uploadsDir, fileId);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      console.log(`Deleted file: ${fileId}`);
+    }
+
+    // If it's a signed file, also try to delete the original
+    if (fileId.startsWith('signed-')) {
+      // The format is signed-{timestamp}-{originalId}
+      // We need to extract {originalId}
+      const match = fileId.match(/^signed-\d+-(.+)$/);
+      if (match && match[1]) {
+        const originalId = match[1];
+        const originalPath = path.join(uploadsDir, originalId);
+        if (fs.existsSync(originalPath)) {
+          fs.unlinkSync(originalPath);
+          console.log(`Deleted original file: ${originalId}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`Error cleaning up files for ${fileId}:`, err);
+  }
+}
+
+/**
  * Upload signed PDF back to Lark Base attachment field (outputFieldName)
  */
 app.post('/api/lark/upload', async (req, res) => {
   const { sessionId } = req.body; // Expect sessionId to invalidate it
+  const { id } = req.body;
   try {
-    const { appId, appSecret, id, baseToken, tableId, recordId, outputFieldName } = req.body;
+    const { appId, appSecret, baseToken, tableId, recordId, outputFieldName } = req.body;
     const filePath = path.join(uploadsDir, id);
 
     if (!appId || !appSecret) {
@@ -214,11 +245,46 @@ app.post('/api/lark/upload', async (req, res) => {
       saveSessions(larkSessions);
     }
 
+    // 4. Cleanup local files
+    cleanupFiles(id);
+
     res.json({ success: true, fileToken: newFileToken });
   } catch (error: any) {
     console.error('Lark Upload Error:', error);
     res.status(500).json({ error: error.message || 'Failed to upload PDF back to Lark' });
   }
+});
+
+/**
+ * Download a file and delete it afterwards
+ */
+app.get('/api/download/:id', (req, res) => {
+  const fileId = req.params.id;
+  const filePath = path.join(uploadsDir, fileId);
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+
+  // Extract original filename if possible (it's after the timestamp in the ID)
+  // Format: signed-{timestamp}-{original-timestamp}-{filename}
+  let downloadName = fileId;
+  const nameMatch = fileId.match(/^signed-\d+-\d+-(.+)$/);
+  if (nameMatch && nameMatch[1]) {
+    downloadName = `已签名-${nameMatch[1]}`;
+  } else if (fileId.startsWith('signed-')) {
+    downloadName = `已签名-${fileId.substring(7)}`;
+  }
+
+  res.download(filePath, downloadName, (err) => {
+    if (err) {
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Error downloading file' });
+      }
+    } else {
+      cleanupFiles(fileId);
+    }
+  });
 });
 
 // Socket.io logic
