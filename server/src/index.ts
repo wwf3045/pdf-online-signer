@@ -53,8 +53,31 @@ app.get('/api/config', (req, res) => {
 });
 
 // --- Lark Session Management ---
-// Simple in-memory store for Lark parameters (valid for 30 minutes)
-const larkSessions = new Map<string, { params: any, createdAt: number }>();
+// Persistent store for Lark parameters in a JSON file
+const SESSIONS_FILE = path.join(__dirname, '../../sessions.json');
+
+function loadSessions(): Map<string, { params: any, createdAt: number }> {
+  try {
+    if (fs.existsSync(SESSIONS_FILE)) {
+      const data = fs.readFileSync(SESSIONS_FILE, 'utf8');
+      return new Map(Object.entries(JSON.parse(data)));
+    }
+  } catch (err) {
+    console.error('Failed to load sessions:', err);
+  }
+  return new Map();
+}
+
+function saveSessions(sessions: Map<string, any>) {
+  try {
+    const data = JSON.stringify(Object.fromEntries(sessions));
+    fs.writeFileSync(SESSIONS_FILE, data, 'utf8');
+  } catch (err) {
+    console.error('Failed to save sessions:', err);
+  }
+}
+
+const larkSessions = loadSessions();
 
 app.post('/api/lark/init', (req, res) => {
   const { appId, appSecret, baseToken, tableId, recordId, sourceFieldName, outputFieldName } = req.body;
@@ -67,20 +90,15 @@ app.post('/api/lark/init', (req, res) => {
     params: { appId, appSecret, baseToken, tableId, recordId, sourceFieldName, outputFieldName },
     createdAt: Date.now()
   });
+  saveSessions(larkSessions);
 
   res.json({ sessionId });
 });
 
 app.get('/api/lark/session/:id', (req, res) => {
   const session = larkSessions.get(req.params.id);
-  if (!session) return res.status(404).json({ error: 'Session not found or expired' });
+  if (!session) return res.status(404).json({ error: 'Session not found' });
   
-  // Auto-expire after 30 mins
-  if (Date.now() - session.createdAt > 30 * 60 * 1000) {
-    larkSessions.delete(req.params.id);
-    return res.status(404).json({ error: 'Session expired' });
-  }
-
   res.json(session.params);
 });
 
@@ -141,6 +159,7 @@ app.post('/api/lark/fetch', async (req, res) => {
  * Upload signed PDF back to Lark Base attachment field (outputFieldName)
  */
 app.post('/api/lark/upload', async (req, res) => {
+  const { sessionId } = req.body; // Expect sessionId to invalidate it
   try {
     const { appId, appSecret, id, baseToken, tableId, recordId, outputFieldName } = req.body;
     const filePath = path.join(uploadsDir, id);
@@ -188,6 +207,12 @@ app.post('/api/lark/upload', async (req, res) => {
         },
       },
     });
+
+    // 3. Invalidate session upon successful upload
+    if (sessionId) {
+      larkSessions.delete(sessionId);
+      saveSessions(larkSessions);
+    }
 
     res.json({ success: true, fileToken: newFileToken });
   } catch (error: any) {

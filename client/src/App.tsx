@@ -378,6 +378,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           id: signedId,
+          sessionId: queryParams.get('session'), // Pass session ID to invalidate it
           ...larkParams
         }),
       });
