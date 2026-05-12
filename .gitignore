@@ -5,6 +5,7 @@ dist-ssr/
 *.local
 
 # Logs
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -21,6 +22,8 @@ yarn-error.log*
 # Project specific
 uploads/
 .env
+sessions.json
+*.pdf
 
 # MacOS
 .DS_Store

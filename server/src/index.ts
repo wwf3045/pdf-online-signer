@@ -3,12 +3,14 @@ import cors from 'cors';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, degrees } from 'pdf-lib';
 import dotenv from 'dotenv';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import os from 'os';
 import * as Lark from '@larksuiteoapi/node-sdk';
+import axios from 'axios';
+import FormData from 'form-data';
 
 dotenv.config();
 
@@ -80,14 +82,17 @@ function saveSessions(sessions: Map<string, any>) {
 const larkSessions = loadSessions();
 
 app.post('/api/lark/init', (req, res) => {
-  const { appId, appSecret, baseToken, tableId, recordId, sourceFieldName, outputFieldName } = req.body;
-  if (!appId || !appSecret || !baseToken || !tableId || !recordId || !sourceFieldName || !outputFieldName) {
-    return res.status(400).json({ error: 'Missing required parameters (sourceFieldName and outputFieldName are both required)' });
+  const { appId, appSecret, personalBaseToken, baseToken, tableId, recordId, sourceFieldName, outputFieldName } = req.body;
+  if ((!appId || !appSecret) && !personalBaseToken) {
+    return res.status(400).json({ error: 'Missing required credentials (appId/appSecret or personalBaseToken)' });
+  }
+  if (!baseToken || !tableId || !recordId || !sourceFieldName || !outputFieldName) {
+    return res.status(400).json({ error: 'Missing required parameters (baseToken, tableId, recordId, sourceFieldName, outputFieldName)' });
   }
 
   const sessionId = Math.random().toString(36).substring(2, 15);
   larkSessions.set(sessionId, {
-    params: { appId, appSecret, baseToken, tableId, recordId, sourceFieldName, outputFieldName },
+    params: { appId, appSecret, personalBaseToken, baseToken, tableId, recordId, sourceFieldName, outputFieldName },
     createdAt: Date.now()
   });
   saveSessions(larkSessions);
@@ -109,24 +114,33 @@ app.get('/api/lark/session/:id', (req, res) => {
  */
 app.post('/api/lark/fetch', async (req, res) => {
   try {
-    const { appId, appSecret, baseToken, tableId, recordId, sourceFieldName } = req.body;
+    const { appId, appSecret, personalBaseToken, baseToken, tableId, recordId, sourceFieldName } = req.body;
     
-    if (!appId || !appSecret || !baseToken || !tableId || !recordId || !sourceFieldName) {
+    if (((!appId || !appSecret) && !personalBaseToken) || !baseToken || !tableId || !recordId || !sourceFieldName) {
       return res.status(400).json({ error: 'Missing required Lark parameters or credentials' });
     }
 
-    const larkClient = new Lark.Client({ appId, appSecret });
+    let attachmentField: any;
 
-    // 1. Get record data to find file token
-    const record = await larkClient.bitable.appTableRecord.get({
-      path: {
-        app_token: baseToken,
-        table_id: tableId,
-        record_id: recordId,
-      },
-    });
+    if (personalBaseToken) {
+      // Direct API call for Personal Access Token to avoid SDK auth issues on base-api domain
+      const response = await axios.get(`https://base-api.feishu.cn/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/${recordId}`, {
+        headers: { Authorization: `Bearer ${personalBaseToken}` }
+      });
+      attachmentField = response.data?.data?.record?.fields?.[sourceFieldName];
+    } else {
+      const larkClient = new Lark.Client({ appId: appId!, appSecret: appSecret! });
+      // 1. Get record data to find file token
+      const record = await larkClient.bitable.appTableRecord.get({
+        path: {
+          app_token: baseToken,
+          table_id: tableId,
+          record_id: recordId,
+        },
+      });
+      attachmentField = (record.data?.record?.fields as any)?.[sourceFieldName];
+    }
 
-    const attachmentField = (record.data?.record?.fields as any)?.[sourceFieldName];
     if (!attachmentField || !Array.isArray(attachmentField) || attachmentField.length === 0) {
       return res.status(404).json({ error: `Source field "${sourceFieldName}" is empty or not an attachment field` });
     }
@@ -135,49 +149,57 @@ app.post('/api/lark/fetch', async (req, res) => {
     const fileName = attachmentField[0].name;
 
     // 2. Download file from Lark
-    const response = await (larkClient.bitable as any).appAttachment.download({
-      path: {
-        app_token: baseToken,
-        attachment_token: fileToken,
-      },
-    });
+    let fileBuffer: Buffer;
+    if (personalBaseToken) {
+      const downloadRes = await axios.get(`https://base-api.feishu.cn/open-apis/drive/v1/medias/${fileToken}/download?extra=%7B%22bitable_token%22%3A%22${baseToken}%22%2C%22table_id%22%3A%22${tableId}%22%7D`, {
+        headers: { Authorization: `Bearer ${personalBaseToken}` },
+        responseType: 'arraybuffer'
+      });
+      fileBuffer = Buffer.from(downloadRes.data);
+    } else {
+      const larkClient = new Lark.Client({ appId: appId!, appSecret: appSecret! });
+      const response = await (larkClient.bitable as any).appAttachment.download({
+        path: {
+          app_token: baseToken,
+          attachment_token: fileToken,
+        },
+      });
+      fileBuffer = response as unknown as Buffer;
+    }
 
     // 3. Save to local uploads
     const localFileName = `${Date.now()}-lark-${fileName}`;
     const localPath = path.join(uploadsDir, localFileName);
     
-    fs.writeFileSync(localPath, response as unknown as Buffer);
+    fs.writeFileSync(localPath, fileBuffer);
 
     res.json({ id: localFileName, fileName });
   } catch (error: any) {
-    console.error('Lark Fetch Error:', error);
-    res.status(500).json({ error: error.message || 'Failed to fetch PDF from Lark' });
+    console.error('Lark Fetch Error:', error.response?.data || error.message);
+    res.status(500).json({ error: error.response?.data?.msg || error.message || 'Failed to fetch PDF from Lark' });
   }
 });
 
 /**
- * Helper to delete a file and its original counterpart if it's a signed file
+ * Helper to delete a file and its original counterpart if it's a signed file.
+ * Now recursive to handle multi-level signed files.
  */
 function cleanupFiles(fileId: string) {
   try {
     const filePath = path.join(uploadsDir, fileId);
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
-      console.log(`Deleted file: ${fileId}`);
+      console.log(`Successfully deleted file: ${fileId}`);
     }
 
     // If it's a signed file, also try to delete the original
     if (fileId.startsWith('signed-')) {
       // The format is signed-{timestamp}-{originalId}
-      // We need to extract {originalId}
       const match = fileId.match(/^signed-\d+-(.+)$/);
       if (match && match[1]) {
         const originalId = match[1];
-        const originalPath = path.join(uploadsDir, originalId);
-        if (fs.existsSync(originalPath)) {
-          fs.unlinkSync(originalPath);
-          console.log(`Deleted original file: ${originalId}`);
-        }
+        // Recursive call to delete original and any further ancestors
+        cleanupFiles(originalId);
       }
     }
   } catch (err) {
@@ -186,16 +208,43 @@ function cleanupFiles(fileId: string) {
 }
 
 /**
+ * Periodically clean up files older than 1 hour to remove orphans
+ */
+function cleanupOldFiles() {
+  try {
+    const files = fs.readdirSync(uploadsDir);
+    const now = Date.now();
+    const oneHour = 60 * 60 * 1000;
+
+    for (const file of files) {
+      const filePath = path.join(uploadsDir, file);
+      const stats = fs.statSync(filePath);
+      if (now - stats.mtimeMs > oneHour) {
+        fs.unlinkSync(filePath);
+        console.log(`Cleaned up orphaned file: ${file}`);
+      }
+    }
+  } catch (err) {
+    console.error('Error in cleanupOldFiles:', err);
+  }
+}
+
+// Run cleanup every 30 minutes
+setInterval(cleanupOldFiles, 30 * 60 * 1000);
+// Run once on startup
+setTimeout(cleanupOldFiles, 5000);
+
+/**
  * Upload signed PDF back to Lark Base attachment field (outputFieldName)
  */
 app.post('/api/lark/upload', async (req, res) => {
   const { sessionId } = req.body; // Expect sessionId to invalidate it
   const { id } = req.body;
   try {
-    const { appId, appSecret, baseToken, tableId, recordId, outputFieldName } = req.body;
+    const { appId, appSecret, personalBaseToken, baseToken, tableId, recordId, outputFieldName } = req.body;
     const filePath = path.join(uploadsDir, id);
 
-    if (!appId || !appSecret) {
+    if (((!appId || !appSecret) && !personalBaseToken)) {
       return res.status(400).json({ error: 'Missing Lark credentials' });
     }
 
@@ -203,41 +252,90 @@ app.post('/api/lark/upload', async (req, res) => {
       return res.status(404).json({ error: 'Signed PDF not found locally' });
     }
 
-    const larkClient = new Lark.Client({ appId, appSecret });
-
-    // 1. Upload file to Lark Bitable Attachment space
     const fileStat = fs.statSync(filePath);
     const fileContent = fs.readFileSync(filePath);
+    let newFileToken: string;
 
-    const uploadRes = await (larkClient.bitable as any).appAttachment.upload({
-      path: {
-        app_token: baseToken,
-      },
-      data: {
-        file_name: id,
-        parent_type: 'bitable_record',
-        parent_node: tableId,
-        size: fileStat.size,
-        file: fileContent,
-      },
-    });
+    if (personalBaseToken) {
+      // 1. Upload file to Lark via axios
+      const formData = new FormData();
+      formData.append('file_name', id);
+      formData.append('parent_type', 'bitable_file');
+      formData.append('parent_node', baseToken);
+      formData.append('size', String(fileStat.size));
+      formData.append('extra', JSON.stringify({ drive_route_token: baseToken }));
+      formData.append('file', fileContent, { filename: id });
 
-    const newFileToken = uploadRes.data?.file_token;
-    if (!newFileToken) throw new Error('Failed to get file token after upload');
+      console.log(`Uploading to Lark PAT (bitable_file) via base-api - Base: ${baseToken}`);
 
-    // 2. Update record field with new attachment
-    await larkClient.bitable.appTableRecord.update({
-      path: {
-        app_token: baseToken,
-        table_id: tableId,
-        record_id: recordId,
-      },
-      data: {
-        fields: {
-          [outputFieldName]: [{ file_token: newFileToken }]
+      try {
+        const uploadRes = await axios.post(`https://base-api.feishu.cn/open-apis/drive/v1/medias/upload_all`, formData, {
+          headers: { 
+            Authorization: `Bearer ${personalBaseToken}`,
+            ...formData.getHeaders()
+          }
+        });
+
+        console.log('Upload Response Success:', JSON.stringify(uploadRes.data));
+        newFileToken = uploadRes.data?.data?.file_token;
+
+        if (!newFileToken) {
+          throw new Error(`Upload Failed - No Token: ${JSON.stringify(uploadRes.data)}`);
+        }
+
+        // 2. Update record field with new attachment
+        const updateUrl = `https://base-api.feishu.cn/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/${recordId}`;
+        console.log(`Updating record via PUT to base-api: ${updateUrl}`);
+        
+        const putRes = await axios.put(updateUrl, {
+          fields: {
+            [outputFieldName]: [{ file_token: newFileToken }]
+          },
+        }, {
+          headers: { Authorization: `Bearer ${personalBaseToken}` }
+        });
+        console.log('Record Updated successfully (PUT):', JSON.stringify(putRes.data));
+      } catch (err: any) {
+        const detail = err.response?.data || err.message;
+        console.error('Lark PAT Error Details:', JSON.stringify(detail));
+        const larkMsg = err.response?.data?.msg || err.response?.data?.error || err.message;
+        throw new Error(larkMsg || 'Lark PAT Operation Failed');
+      }
+
+    } else {
+      const larkClient = new Lark.Client({ appId: appId!, appSecret: appSecret! });
+
+      // 1. Upload file to Lark Bitable Attachment space
+      const uploadRes = await (larkClient.bitable as any).appAttachment.upload({
+        path: {
+          app_token: baseToken,
         },
-      },
-    });
+        data: {
+          file_name: id,
+          parent_type: 'bitable_record',
+          parent_node: tableId,
+          size: fileStat.size,
+          file: fileContent,
+        },
+      });
+
+      newFileToken = uploadRes.data?.file_token;
+      if (!newFileToken) throw new Error('Failed to get file token after upload');
+
+      // 2. Update record field with new attachment
+      await larkClient.bitable.appTableRecord.update({
+        path: {
+          app_token: baseToken,
+          table_id: tableId,
+          record_id: recordId,
+        },
+        data: {
+          fields: {
+            [outputFieldName]: [{ file_token: newFileToken }]
+          },
+        },
+      });
+    }
 
     // 3. Invalidate session upon successful upload
     if (sessionId) {
@@ -250,8 +348,8 @@ app.post('/api/lark/upload', async (req, res) => {
 
     res.json({ success: true, fileToken: newFileToken });
   } catch (error: any) {
-    console.error('Lark Upload Error:', error);
-    res.status(500).json({ error: error.message || 'Failed to upload PDF back to Lark' });
+    console.error('Lark Upload Error:', error.response?.data || error.message);
+    res.status(500).json({ error: error.response?.data?.msg || error.message || 'Failed to upload PDF back to Lark' });
   }
 });
 
@@ -319,14 +417,43 @@ app.post('/api/sign', async (req, res) => {
     const pdfDoc = await PDFDocument.load(existingPdfBytes);
 
     for (const sig of signatures) {
-      const { pageIndex, x, y, width, height, imageBase64 } = sig;
+      const { pageIndex, x, y, width, height, rotation: manualRotation, imageBase64 } = sig;
       const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, '');
       const imageBytes = Buffer.from(base64Data, 'base64');
       const signatureImage = await pdfDoc.embedPng(imageBytes);
       const pages = pdfDoc.getPages();
       const page = pages[pageIndex];
-      const { height: pageHeight } = page.getSize();
-      page.drawImage(signatureImage, { x, y: pageHeight - y - height, width, height });
+      
+      const { width: pWidth, height: pHeight } = page.getSize();
+      const intrinsicRotation = page.getRotation().angle;
+      const totalRotation = (intrinsicRotation + (manualRotation || 0)) % 360;
+
+      // Adjust coordinates and rotation based on total visual rotation
+      let drawX, drawY;
+      if (totalRotation === 0) {
+        drawX = x;
+        drawY = pHeight - y - height;
+      } else if (totalRotation === 90) {
+        drawX = y + height;
+        drawY = x;
+      } else if (totalRotation === 180) {
+        drawX = pWidth - x;
+        drawY = pHeight - y;
+      } else if (totalRotation === 270) {
+        drawX = pWidth - y - height;
+        drawY = pHeight - x;
+      } else {
+        drawX = x;
+        drawY = pHeight - y - height;
+      }
+
+      page.drawImage(signatureImage, {
+        x: drawX,
+        y: drawY,
+        width,
+        height,
+        rotate: degrees(totalRotation)
+      });
     }
 
     const pdfBytes = await pdfDoc.save();

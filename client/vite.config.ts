@@ -9,6 +9,9 @@ export default defineConfig({
     tailwindcss(),
   ],
   server: {
-    allowedHosts: ['sign.wwfeng3045.top']
+    allowedHosts: [
+	'sign.wwfeng3045.top',
+    	'sign.ecs.wwfeng3045.top'
+    ]
   }
 })

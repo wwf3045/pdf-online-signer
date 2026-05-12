@@ -2,16 +2,17 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import SignatureCanvas from 'react-signature-canvas';
 import { Rnd } from 'react-rnd';
-import { Upload, Plus, Download, X, Eraser, Check, Menu, Smartphone, Monitor } from 'lucide-react';
+import { Upload, Plus, Download, X, Eraser, Check, Menu, Smartphone, Monitor, RotateCw } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { io, Socket } from 'socket.io-client';
 import { QRCodeSVG } from 'qrcode.react';
 
 // Setup PDF.js worker and CMap for Chinese characters
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
-const CMAP_URL = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/cmaps/`;
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+const CMAP_URL = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/cmaps/`;
 const CMAP_PACKED = true;
+const STANDARD_FONT_DATA_URL = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/standard_fonts/`;
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -48,6 +49,11 @@ export default function App() {
   const [uploadId, setUploadId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showSidebar, setShowSidebar] = useState(false);
+  const [globalRotation, setGlobalRotation] = useState(0);
+
+  const rotateAllPages = () => {
+    setGlobalRotation(prev => (prev + 90) % 360);
+  };
   const [signatureStrokes, setSignatureStrokes] = useState<any[]>([]);
   const [orientationKey, setOrientationKey] = useState(0);
   const [signTab, setSignTab] = useState<'draw' | 'qr'>('draw');
@@ -181,6 +187,7 @@ export default function App() {
           data: arrayBuffer,
           cMapUrl: CMAP_URL,
           cMapPacked: CMAP_PACKED,
+          standardFontDataUrl: STANDARD_FONT_DATA_URL,
         });
         const pdf = await loadingTask.promise;
         const dimensions: { [key: number]: { width: number, height: number } } = {};
@@ -220,12 +227,8 @@ export default function App() {
 
     try {
       let dataUrl = '';
-      try {
-        dataUrl = sigPad.getTrimmedCanvas().toDataURL('image/png');
-      } catch (e) {
-        console.warn('裁剪失败，使用原始画布', e);
-        dataUrl = sigPad.getCanvas().toDataURL('image/png');
-      }
+      // Simplified: Just use the raw canvas to avoid library-specific errors
+      dataUrl = sigPad.getCanvas().toDataURL('image/png');
 
       if (!dataUrl || dataUrl === 'data:,') {
         throw new Error('签名数据无效');
@@ -251,13 +254,15 @@ export default function App() {
     setSignTab('draw');
   };
 
+  const [lastClickedPageIndex, setLastClickedPageIndex] = useState(0);
+
   const addSignatureToPage = (signatureId: string) => {
     const signature = signatures.find(s => s.id === signatureId);
     if (!signature) return;
     const newPlaced: PlacedSignature = {
       id: Date.now().toString(),
       signatureId,
-      pageIndex: 0,
+      pageIndex: lastClickedPageIndex,
       xPercent: 10,
       yPercent: 10,
       widthPercent: 20,
@@ -268,8 +273,9 @@ export default function App() {
   };
 
   const [larkParams, setLarkParams] = useState<{
-    appId: string;
-    appSecret: string;
+    appId?: string;
+    appSecret?: string;
+    personalBaseToken?: string;
     baseToken: string;
     tableId: string;
     recordId: string;
@@ -277,11 +283,14 @@ export default function App() {
     outputFieldName: string;
   } | null>(null);
 
+  const fetchStarted = useRef(false);
+
   // Auto-fetch from Lark if session ID exist
   useEffect(() => {
     const lSessionId = queryParams.get('larkSession');
 
-    if (lSessionId) {
+    if (lSessionId && !fetchStarted.current) {
+      fetchStarted.current = true;
       // 1. Fetch parameters from session
       setLoading(true);
       fetch(`${API_BASE}/api/lark/session/${lSessionId}`)
@@ -300,6 +309,22 @@ export default function App() {
         });
     }
   }, []);
+
+  // Recalculate dimensions when PDF or rotation changes
+  useEffect(() => {
+    const updateDimensions = async () => {
+      if (!pdfDoc) return;
+      const dimensions: { [key: number]: { width: number, height: number } } = {};
+      for (let i = 1; i <= pdfDoc.numPages; i++) {
+        const page = await pdfDoc.getPage(i);
+        // Important: viewport dimensions should match the visual rotation
+        const viewport = page.getViewport({ scale: 1, rotation: (page.rotate + globalRotation) % 360 });
+        dimensions[i - 1] = { width: viewport.width, height: viewport.height };
+      }
+      setPageDimensions(dimensions);
+    };
+    updateDimensions();
+  }, [pdfDoc, globalRotation]);
 
   const handleLarkFetch = async (params: any) => {
     setLoading(true);
@@ -324,16 +349,10 @@ export default function App() {
         data: arrayBuffer,
         cMapUrl: CMAP_URL,
         cMapPacked: CMAP_PACKED,
+        standardFontDataUrl: STANDARD_FONT_DATA_URL,
       });
       const pdf = await loadingTask.promise;
       
-      const dimensions: { [key: number]: { width: number, height: number } } = {};
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 1 });
-        dimensions[i - 1] = { width: viewport.width, height: viewport.height };
-      }
-      setPageDimensions(dimensions);
       setPdfDoc(pdf);
       setNumPages(pdf.numPages);
       setFile({ name: data.fileName } as File);
@@ -363,6 +382,7 @@ export default function App() {
               y: (ps.yPercent / 100) * dims.height,
               width: (ps.widthPercent / 100) * dims.width,
               height: (ps.heightPercent / 100) * dims.height,
+              rotation: globalRotation,
               imageBase64: signatures.find(s => s.id === ps.signatureId)?.dataUrl
             };
           })
@@ -378,7 +398,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           id: signedId,
-          sessionId: queryParams.get('session'), // Pass session ID to invalidate it
+          sessionId: queryParams.get('larkSession'), // Pass session ID to invalidate it
           ...larkParams
         }),
       });
@@ -415,6 +435,7 @@ export default function App() {
               y: (ps.yPercent / 100) * dims.height,
               width: (ps.widthPercent / 100) * dims.width,
               height: (ps.heightPercent / 100) * dims.height,
+              rotation: globalRotation,
               imageBase64: signatures.find(s => s.id === ps.signatureId)?.dataUrl
             };
           })
@@ -530,6 +551,13 @@ export default function App() {
                 <Plus size={18} />
                 <span>新增签名</span>
               </button>
+              <button 
+                onClick={rotateAllPages}
+                className="flex items-center gap-2 bg-gray-600 text-white px-3 py-1.5 md:px-4 md:py-2 rounded-lg hover:bg-gray-700 transition text-sm md:text-base"
+              >
+                <RotateCw size={18} />
+                <span>旋转</span>
+              </button>
               {larkParams && (
                 <button 
                   onClick={handleSubmitToLark}
@@ -556,7 +584,7 @@ export default function App() {
       <main className="w-full max-w-7xl flex flex-col md:flex-row gap-4 md:gap-8 p-4 md:p-8">
         {file && (
           <aside className={cn(
-            "fixed inset-y-0 left-0 z-40 w-64 bg-white p-4 shadow-xl transition-transform transform md:relative md:translate-x-0 md:shadow-none md:rounded-xl md:h-fit",
+            "fixed inset-y-0 left-0 z-40 w-64 bg-white p-4 shadow-xl transition-transform transform md:sticky md:top-24 md:translate-x-0 md:shadow-none md:rounded-xl md:h-fit",
             showSidebar ? "translate-x-0" : "-translate-x-full"
           )}>
             <div className="flex justify-between items-center mb-4 md:hidden">
@@ -604,10 +632,14 @@ export default function App() {
                   key={i} 
                   pdfDoc={pdfDoc} 
                   pageIndex={i} 
+                  rotation={globalRotation}
                   placedSignatures={placedSignatures.filter(ps => ps.pageIndex === i)}
                   setPlacedSignatures={setPlacedSignatures}
                   allPlacedSignatures={placedSignatures}
                   signatures={signatures}
+                  addSignatureToPage={addSignatureToPage}
+                  setShowSidebar={setShowSidebar}
+                  setLastClickedPageIndex={setLastClickedPageIndex}
                 />
               ))}
             </div>
@@ -681,7 +713,7 @@ export default function App() {
   );
 }
 
-function PDFPage({ pdfDoc, pageIndex, placedSignatures, setPlacedSignatures, allPlacedSignatures, signatures }: any) {
+function PDFPage({ pdfDoc, pageIndex, rotation, placedSignatures, setPlacedSignatures, allPlacedSignatures, signatures, addSignatureToPage, setShowSidebar, setLastClickedPageIndex }: any) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [renderDimensions, setRenderDimensions] = useState({ width: 0, height: 0 });
@@ -700,19 +732,54 @@ function PDFPage({ pdfDoc, pageIndex, placedSignatures, setPlacedSignatures, all
   }, []);
 
   useEffect(() => {
+    let renderTask: any = null;
+    let isCanceled = false;
+
     const renderPage = async () => {
-      const page = await pdfDoc.getPage(pageIndex + 1);
-      const viewport = page.getViewport({ scale: 1.5 });
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const context = canvas.getContext('2d');
-      if (!context) return;
-      canvas.height = viewport.height;
-      canvas.width = viewport.width;
-      await page.render({ canvasContext: context, viewport: viewport }).promise;
+      try {
+        const page = await pdfDoc.getPage(pageIndex + 1);
+        if (isCanceled) return;
+
+        const pixelRatio = window.devicePixelRatio || 1;
+        const baseScale = 2.0; 
+        const viewport = page.getViewport({ 
+          scale: baseScale * pixelRatio, 
+          rotation: (page.rotate + rotation) % 360 
+        });
+        
+        const canvas = canvasRef.current;
+        if (!canvas || isCanceled) return;
+        const context = canvas.getContext('2d');
+        if (!context) return;
+        
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        canvas.style.width = '100%';
+        canvas.style.height = 'auto';
+
+        renderTask = page.render({ 
+          canvasContext: context, 
+          viewport: viewport,
+          intent: 'print'
+        });
+
+        await renderTask.promise;
+      } catch (err: any) {
+        if (err.name !== 'RenderingCancelledException') {
+          console.error('PDF Render Error:', err);
+        }
+      }
     };
+
     renderPage();
-  }, [pdfDoc, pageIndex]);
+
+    return () => {
+      isCanceled = true;
+      if (renderTask) {
+        renderTask.cancel();
+      }
+    };
+  }, [pdfDoc, pageIndex, rotation]);
 
   const updatePlacedSignature = (id: string, updates: any) => {
     setPlacedSignatures(allPlacedSignatures.map((ps: any) => ps.id === id ? { ...ps, ...updates } : ps));
@@ -723,33 +790,47 @@ function PDFPage({ pdfDoc, pageIndex, placedSignatures, setPlacedSignatures, all
   };
 
   return (
-    <div ref={containerRef} className="relative shadow-2xl bg-white rounded-sm border border-gray-300 w-full max-w-fit mx-auto">
-      <canvas ref={canvasRef} className="max-w-full h-auto block" />
-      {renderDimensions.width > 0 && placedSignatures.map((ps: any) => {
-        const sig = signatures.find((s: any) => s.id === ps.signatureId);
-        if (!sig) return null;
-        const x = (ps.xPercent / 100) * renderDimensions.width;
-        const y = (ps.yPercent / 100) * renderDimensions.height;
-        const width = (ps.widthPercent / 100) * renderDimensions.width;
-        const height = (ps.heightPercent / 100) * renderDimensions.height;
-        return (
-          <Rnd
-            key={ps.id}
-            size={{ width, height }}
-            position={{ x, y }}
-            onDragStop={(_, d) => updatePlacedSignature(ps.id, { xPercent: (d.x / renderDimensions.width) * 100, yPercent: (d.y / renderDimensions.height) * 100 })}
-            onResizeStop={(_e, _dir, ref, _delta, pos) => updatePlacedSignature(ps.id, { widthPercent: (parseInt(ref.style.width) / renderDimensions.width) * 100, heightPercent: (parseInt(ref.style.height) / renderDimensions.height) * 100, xPercent: (pos.x / renderDimensions.width) * 100, yPercent: (pos.y / renderDimensions.height) * 100 })}
-            bounds="parent"
-            lockAspectRatio={true}
-            className="group z-10"
-          >
-            <div className="relative w-full h-full border-2 border-dashed border-blue-400 group-hover:border-blue-600 bg-blue-400/5 transition-colors">
-              <img src={sig.dataUrl} className="w-full h-full object-contain pointer-events-none" />
-              <button onClick={(e) => { e.stopPropagation(); removePlacedSignature(ps.id); }} className="absolute -top-3 -right-3 bg-red-500 text-white rounded-full p-1.5 shadow-lg opacity-0 group-hover:opacity-100 transition hover:bg-red-600 scale-110"><X size={14} /></button>
-            </div>
-          </Rnd>
-        );
-      })}
+    <div className="flex flex-col items-center gap-2 w-full max-w-fit mx-auto group/page">
+      <div className="flex items-center justify-between w-full px-2 text-sm text-gray-500 font-medium">
+        <span>第 {pageIndex + 1} 页</span>
+        <button 
+          onClick={() => {
+            setLastClickedPageIndex(pageIndex);
+            setShowSidebar(true);
+          }}
+          className="flex items-center gap-1 text-blue-600 hover:text-blue-700 transition"
+        >
+          <Plus size={16} /> 在此页添加签名
+        </button>
+      </div>
+      <div ref={containerRef} className="relative shadow-2xl bg-white rounded-sm border border-gray-300 w-full overflow-hidden">
+        <canvas key={`${pageIndex}-${rotation}`} ref={canvasRef} className="max-w-full h-auto block" />
+        {renderDimensions.width > 0 && placedSignatures.map((ps: any) => {
+          const sig = signatures.find((s: any) => s.id === ps.signatureId);
+          if (!sig) return null;
+          const x = (ps.xPercent / 100) * renderDimensions.width;
+          const y = (ps.yPercent / 100) * renderDimensions.height;
+          const width = (ps.widthPercent / 100) * renderDimensions.width;
+          const height = (ps.heightPercent / 100) * renderDimensions.height;
+          return (
+            <Rnd
+              key={ps.id}
+              size={{ width, height }}
+              position={{ x, y }}
+              onDragStop={(_, d) => updatePlacedSignature(ps.id, { xPercent: (d.x / renderDimensions.width) * 100, yPercent: (d.y / renderDimensions.height) * 100 })}
+              onResizeStop={(_e, _dir, ref, _delta, pos) => updatePlacedSignature(ps.id, { widthPercent: (parseInt(ref.style.width) / renderDimensions.width) * 100, heightPercent: (parseInt(ref.style.height) / renderDimensions.height) * 100, xPercent: (pos.x / renderDimensions.width) * 100, yPercent: (pos.y / renderDimensions.height) * 100 })}
+              bounds="parent"
+              lockAspectRatio={true}
+              className="z-10"
+            >
+              <div className="relative w-full h-full border-2 border-dashed border-blue-400 hover:border-blue-600 bg-blue-400/5 transition-colors group/sig">
+                <img src={sig.dataUrl} className="w-full h-full object-contain pointer-events-none" />
+                <button onClick={(e) => { e.stopPropagation(); removePlacedSignature(ps.id); }} className="absolute -top-3 -right-3 bg-red-500 text-white rounded-full p-1.5 shadow-lg opacity-0 group-hover/sig:opacity-100 transition hover:bg-red-600 scale-110"><X size={14} /></button>
+              </div>
+            </Rnd>
+          );
+        })}
+      </div>
     </div>
   );
 }

@@ -54,16 +54,28 @@
 ### 3.2 流程接入 (开发者/管理员)
 1.  **初始化会话**: 第三方系统（或集成工具）向接口 `/api/lark/init` 发送 **POST** 请求。
 
-**请求体 JSON 示例**:
+**请求体 JSON 示例 (机器人模式)**:
 ```json
 {
-  "appId": "cli_xxxxxxxx",           // [必填] 飞书自建应用 ID
-  "appSecret": "xxxxxxxxxxxxxxxx",    // [必填] 飞书自建应用 Secret
-  "baseToken": "bascnxxxxxxxx",      // [必填] 多维表格 Token (URL 中 bitable/app/ 后面的一串)
-  "tableId": "tblxxxxxx",            // [必填] 对应的数据表 ID (URL 中 table/ 后面的一串)
-  "recordId": "recxxxxxx",           // [必填] 需要签字的那一行记录 ID
-  "sourceFieldName": "待签文件",      // [必填] 存放原始 PDF 的“附件”列名称
-  "outputFieldName": "签字结果"       // [必填] 接收签名后 PDF 的“附件”列名称
+  "appId": "cli_xxxxxxxx",           // [与 personalBaseToken 二选一] 飞书自建应用 ID
+  "appSecret": "xxxxxxxxxxxxxxxx",    // [与 personalBaseToken 二选一] 飞书自建应用 Secret
+  "baseToken": "bascnxxxxxxxx",      // [必填] 多维表格 Token
+  "tableId": "tblxxxxxx",            // [必填] 数据表 ID
+  "recordId": "recxxxxxx",           // [必填] 记录 ID
+  "sourceFieldName": "待签文件",      // [必填] 原始 PDF 列名
+  "outputFieldName": "签字结果"       // [必填] 结果 PDF 列名
+}
+```
+
+**请求体 JSON 示例 (个人访问令牌模式 - 推荐)**:
+```json
+{
+  "personalBaseToken": "pat_xxxxxxx", // [与 appId/appSecret 二选一] 飞书个人访问令牌 (Personal Access Token)
+  "baseToken": "bascnxxxxxxxx",
+  "tableId": "tblxxxxxx",
+  "recordId": "recxxxxxx",
+  "sourceFieldName": "待签文件",
+  "outputFieldName": "签字结果"
 }
 ```
 
