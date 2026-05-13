@@ -151,7 +151,7 @@ app.post('/api/lark/fetch', async (req, res) => {
     // 2. Download file from Lark
     let fileBuffer: Buffer;
     if (personalBaseToken) {
-      const downloadRes = await axios.get(`https://base-api.feishu.cn/open-apis/drive/v1/medias/${fileToken}/download?extra=%7B%22bitable_token%22%3A%22${baseToken}%22%2C%22table_id%22%3A%22${tableId}%22%7D`, {
+      const downloadRes = await axios.get(`https://base-api.feishu.cn/open-apis/drive/v1/medias/${fileToken}/download?extra=%7B%22bitablePerm%22%3A%7B%22tableId%22%3A%22${tableId}%22%7D%7D`, {
         headers: { Authorization: `Bearer ${personalBaseToken}` },
         responseType: 'arraybuffer'
       });
