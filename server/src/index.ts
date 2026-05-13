@@ -11,11 +11,80 @@ import os from 'os';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import axios from 'axios';
 import FormData from 'form-data';
+import sharp from 'sharp';
+import libre from 'libreoffice-convert';
+import { promisify } from 'util';
+
+const convertAsync = promisify(libre.convert);
 
 dotenv.config();
 
 const app = express();
 const httpServer = createServer(app);
+
+/**
+ * Helper to convert various formats to PDF
+ */
+async function convertToPdf(inputBuffer: Buffer, fileName: string): Promise<{ buffer: Buffer, fileName: string }> {
+  const ext = path.extname(fileName).toLowerCase();
+  
+  // 1. If it's already a PDF, return as is
+  if (ext === '.pdf') return { buffer: inputBuffer, fileName };
+
+  // 2. If it's an image, use sharp + pdf-lib
+  const imageExts = ['.jpg', '.jpeg', '.png', '.webp', '.tiff', '.bmp'];
+  if (imageExts.includes(ext)) {
+    console.log(`Converting image ${fileName} to PDF...`);
+    const image = sharp(inputBuffer);
+    const { width, height } = await image.metadata();
+    
+    // Create a new PDF document
+    const pdfDoc = await PDFDocument.create();
+    // Add a blank page with the same dimensions as the image
+    const page = pdfDoc.addPage([width || 600, height || 800]);
+    
+    // Embed the image based on format
+    let embeddedImage;
+    if (ext === '.png') {
+      embeddedImage = await pdfDoc.embedPng(inputBuffer);
+    } else {
+      // Convert to JPEG for embedding if not PNG (simpler for pdf-lib)
+      const jpgBuffer = await image.jpeg().toBuffer();
+      embeddedImage = await pdfDoc.embedJpg(jpgBuffer);
+    }
+
+    page.drawImage(embeddedImage, {
+      x: 0,
+      y: 0,
+      width: page.getWidth(),
+      height: page.getHeight(),
+    });
+
+    const pdfBytes = await pdfDoc.save();
+    return { 
+      buffer: Buffer.from(pdfBytes), 
+      fileName: fileName.replace(ext, '.pdf') 
+    };
+  }
+
+  // 3. For Office documents, use LibreOffice
+  const officeExts = ['.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.csv'];
+  if (officeExts.includes(ext)) {
+    console.log(`Converting document ${fileName} to PDF using LibreOffice...`);
+    try {
+      const pdfBuffer = await convertAsync(inputBuffer, '.pdf', undefined);
+      return { 
+        buffer: pdfBuffer as Buffer, 
+        fileName: fileName.replace(ext, '.pdf') 
+      };
+    } catch (err) {
+      console.error('LibreOffice Conversion Error:', err);
+      throw new Error(`Failed to convert ${ext} document to PDF. Ensure LibreOffice is installed.`);
+    }
+  }
+
+  return { buffer: inputBuffer, fileName }; // Fallback
+}
 
 // Ensure uploads directory exists
 const uploadsDir = path.join(__dirname, '../../uploads');
@@ -207,13 +276,16 @@ app.post('/api/lark/fetch', async (req, res) => {
       fileBuffer = response as unknown as Buffer;
     }
 
+    // --- NEW: Convert to PDF if necessary ---
+    const { buffer: processedBuffer, fileName: processedFileName } = await convertToPdf(fileBuffer, fileName);
+
     // 3. Save to local uploads
-    const localFileName = `${Date.now()}-lark-${fileName}`;
+    const localFileName = `${Date.now()}-lark-${processedFileName}`;
     const localPath = path.join(uploadsDir, localFileName);
     
-    fs.writeFileSync(localPath, fileBuffer);
+    fs.writeFileSync(localPath, processedBuffer);
 
-    res.json({ id: localFileName, fileName });
+    res.json({ id: localFileName, fileName: processedFileName });
   } catch (error: any) {
     console.error('Lark Fetch Error:', error.response?.data || error.message);
     res.status(500).json({ error: error.response?.data?.msg || error.message || 'Failed to fetch PDF from Lark' });

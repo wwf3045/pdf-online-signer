@@ -559,6 +559,24 @@ export default function App() {
 
   // --- Main Desktop/Tablet UI ---
 
+  const getFileIcon = (fileName: string) => {
+    const ext = fileName.split('.').pop()?.toLowerCase();
+    if (ext === 'pdf') return <FileText size={24} className="text-red-500" />;
+    if (['doc', 'docx'].includes(ext || '')) return <FileText size={24} className="text-blue-600" />;
+    if (['xls', 'xlsx', 'csv'].includes(ext || '')) return <FileText size={24} className="text-green-600" />;
+    if (['jpg', 'jpeg', 'png', 'webp', 'bmp'].includes(ext || '')) return <FileText size={24} className="text-purple-500" />;
+    return <FileText size={24} className="text-gray-500" />;
+  };
+
+  const getFileBadge = (fileName: string) => {
+    const ext = fileName.split('.').pop()?.toLowerCase();
+    if (ext === 'pdf') return <span className="text-[10px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded font-bold uppercase">PDF</span>;
+    if (['doc', 'docx'].includes(ext || '')) return <span className="text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded font-bold uppercase">Word</span>;
+    if (['xls', 'xlsx', 'csv'].includes(ext || '')) return <span className="text-[10px] bg-green-100 text-green-600 px-1.5 py-0.5 rounded font-bold uppercase">Excel</span>;
+    if (['jpg', 'jpeg', 'png', 'webp', 'bmp'].includes(ext || '')) return <span className="text-[10px] bg-purple-100 text-purple-600 px-1.5 py-0.5 rounded font-bold uppercase">Image</span>;
+    return <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded font-bold uppercase">{ext}</span>;
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col items-center">
       <header className="w-full bg-white border-b sticky top-0 z-30 px-4 py-3 md:px-8 flex justify-between items-center shadow-sm">
@@ -685,10 +703,13 @@ export default function App() {
                       )}>
                         <Check size={14} strokeWidth={4} />
                       </div>
-                      <FileText size={24} className="text-blue-500" />
+                      {getFileIcon(att.name)}
                       <div className="flex-1 min-w-0">
                         <div className="font-bold text-gray-800 truncate">{att.name}</div>
-                        <div className="text-xs text-gray-400">PDF 文档</div>
+                        <div className="flex items-center gap-2 mt-1">
+                          {getFileBadge(att.name)}
+                          <span className="text-[10px] text-gray-400">点击选择</span>
+                        </div>
                       </div>
                     </div>
                   ))}
