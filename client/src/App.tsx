@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import SignatureCanvas from 'react-signature-canvas';
 import { Rnd } from 'react-rnd';
-import { Upload, Plus, Download, X, Eraser, Check, Menu, Smartphone, Monitor, RotateCw, FileText, CheckSquare, Square } from 'lucide-react';
+import { Upload, Plus, Download, X, Eraser, Check, Menu, Smartphone, Monitor, RotateCw, FileText, CheckSquare, Square, PartyPopper } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { io, Socket } from 'socket.io-client';
@@ -169,6 +169,7 @@ export default function App() {
     if (clearQueue) {
       setSigningQueue([]);
       setSelectedTokens([]);
+      setIsAllCompleted(false);
     }
   };
 
@@ -290,6 +291,7 @@ export default function App() {
   const [larkAttachments, setLarkAttachments] = useState<{ name: string, token: string }[]>([]);
   const [selectedTokens, setSelectedTokens] = useState<string[]>([]);
   const [signingQueue, setSigningQueue] = useState<string[]>([]);
+  const [isAllCompleted, setIsAllCompleted] = useState(false);
 
   const toggleToken = (token: string) => {
     setSelectedTokens(prev => 
@@ -443,14 +445,17 @@ export default function App() {
       if (uploadRes.ok) {
         if (signingQueue.length > 1) {
           const nextQueue = signingQueue.slice(1);
-          alert(`恭喜！当前文件已上传。还剩 ${nextQueue.length} 个文件待签署。`);
           resetUpload(false);
           setSigningQueue(nextQueue);
-          handleLarkFetch(larkParams, nextQueue[0]);
+          // Show a brief success message before loading next
+          setLoading(true); 
+          setTimeout(() => {
+            handleLarkFetch(larkParams, nextQueue[0]);
+          }, 500);
         } else {
           setSigningQueue([]);
-          alert('恭喜！签名已成功合成并提交至飞书多维表格。');
-          resetUpload(); // Files are deleted on server, reset local state
+          setIsAllCompleted(true);
+          resetUpload(false); // Clear file but keep queue info for completion view if needed, or just reset
         }
       } else {
         const error = await uploadRes.json();
@@ -676,88 +681,118 @@ export default function App() {
         )}
 
         <section className="flex-1 flex flex-col items-center gap-4">
-          {!file && !loading && larkAttachments.length > 0 && (
-            <div className="w-full max-w-2xl bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-300">
-              <div className="bg-gray-50 border-b px-6 py-4 flex justify-between items-center">
-                <h3 className="text-lg font-bold text-gray-800">选择待签署文件 ({larkAttachments.length})</h3>
-                <div className="text-sm text-gray-500 font-medium">发现多个附件，请选择</div>
+          {isAllCompleted ? (
+            <div className="w-full max-w-2xl bg-white border border-gray-200 rounded-2xl shadow-xl p-12 text-center animate-in zoom-in duration-500">
+              <div className="w-24 h-24 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-6">
+                <PartyPopper size={48} />
               </div>
-              <div className="p-4 max-h-[400px] overflow-y-auto">
-                <div className="grid gap-3">
-                  {larkAttachments.map((att) => (
-                    <div 
-                      key={att.token}
-                      onClick={() => toggleToken(att.token)}
-                      className={cn(
-                        "flex items-center gap-4 p-4 rounded-xl border-2 transition cursor-pointer active:scale-[0.98]",
-                        selectedTokens.includes(att.token) 
-                          ? "border-blue-500 bg-blue-50/50" 
-                          : "border-gray-100 hover:border-blue-200 bg-white"
-                      )}
-                    >
-                      <div className={cn(
-                        "w-6 h-6 rounded flex items-center justify-center border-2 transition",
-                        selectedTokens.includes(att.token)
-                          ? "bg-blue-600 border-blue-600 text-white"
-                          : "border-gray-300 text-transparent"
-                      )}>
-                        <Check size={14} strokeWidth={4} />
-                      </div>
-                      {getFileIcon(att.name)}
-                      <div className="flex-1 min-w-0">
-                        <div className="font-bold text-gray-800 truncate">{att.name}</div>
-                        <div className="flex items-center gap-2 mt-1">
-                          {getFileBadge(att.name)}
-                          <span className="text-[10px] text-gray-400">点击选择</span>
+              <h2 className="text-3xl font-bold text-gray-900 mb-4">全部签署完成！</h2>
+              <p className="text-gray-500 text-lg mb-8">
+                所有选定的文件均已成功合成签名，并已同步回传至飞书多维表格。
+              </p>
+              <div className="flex flex-col sm:flex-row gap-4 justify-center">
+                <button 
+                  onClick={() => resetUpload(true)}
+                  className="bg-gray-900 text-white px-8 py-3 rounded-xl font-bold hover:bg-black transition active:scale-95"
+                >
+                  返回首页
+                </button>
+                <button 
+                  onClick={() => window.close()}
+                  className="bg-white text-gray-700 border border-gray-200 px-8 py-3 rounded-xl font-bold hover:bg-gray-50 transition active:scale-95"
+                >
+                  关闭窗口
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {!file && !loading && larkAttachments.length > 0 && (
+                <div className="w-full max-w-2xl bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-300">
+                  <div className="bg-gray-50 border-b px-6 py-4 flex justify-between items-center">
+                    <h3 className="text-lg font-bold text-gray-800">选择待签署文件 ({larkAttachments.length})</h3>
+                    <div className="text-sm text-gray-500 font-medium">发现多个附件，请选择</div>
+                  </div>
+                  <div className="p-4 max-h-[400px] overflow-y-auto">
+                    <div className="grid gap-3">
+                      {larkAttachments.map((att) => (
+                        <div 
+                          key={att.token}
+                          onClick={() => toggleToken(att.token)}
+                          className={cn(
+                            "flex items-center gap-4 p-4 rounded-xl border-2 transition cursor-pointer active:scale-[0.98]",
+                            selectedTokens.includes(att.token) 
+                              ? "border-blue-500 bg-blue-50/50" 
+                              : "border-gray-100 hover:border-blue-200 bg-white"
+                          )}
+                        >
+                          <div className={cn(
+                            "w-6 h-6 rounded flex items-center justify-center border-2 transition",
+                            selectedTokens.includes(att.token)
+                              ? "bg-blue-600 border-blue-600 text-white"
+                              : "border-gray-300 text-transparent"
+                          )}>
+                            <Check size={14} strokeWidth={4} />
+                          </div>
+                          {getFileIcon(att.name)}
+                          <div className="flex-1 min-w-0">
+                            <div className="font-bold text-gray-800 truncate">{att.name}</div>
+                            <div className="flex items-center gap-2 mt-1">
+                              {getFileBadge(att.name)}
+                              <span className="text-[10px] text-gray-400">点击选择</span>
+                            </div>
+                          </div>
                         </div>
-                      </div>
+                      ))}
                     </div>
+                  </div>
+                  <div className="p-6 bg-gray-50 border-t flex flex-col gap-3">
+                    <button 
+                      onClick={startSigningSelected}
+                      disabled={selectedTokens.length === 0}
+                      className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-lg shadow-lg active:scale-95 transition disabled:opacity-50 disabled:scale-100"
+                    >
+                      {selectedTokens.length > 1 ? `确认签署这 ${selectedTokens.length} 个文件` : '确认签署'}
+                    </button>
+                    <div className="text-center text-sm text-gray-400">签署完成后，文件将自动回传至飞书</div>
+                  </div>
+                </div>
+              )}
+              {!file && !loading && larkAttachments.length === 0 && (
+                <div className="w-full aspect-[3/4] max-w-2xl bg-white border-2 border-dashed border-gray-300 rounded-2xl flex flex-col items-center justify-center text-gray-400 p-8 text-center">
+                  <Upload size={64} className="mb-4 opacity-10" />
+                  <h3 className="text-xl font-medium text-gray-600 mb-2">开始签署文档</h3>
+                  <p>请上传 PDF 文件，然后即可在页面上添加您的手写签名。</p>
+                </div>
+              )}
+              {loading && (
+                <div className="flex flex-col items-center gap-4 py-32">
+                  <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                  <span className="text-blue-600 font-medium text-lg">
+                    {signingQueue.length > 0 ? `正在准备下一个文件... (剩余 ${signingQueue.length} 个)` : "正在处理中..."}
+                  </span>
+                </div>
+              )}
+              {pdfDoc && (
+                <div className="relative flex flex-col gap-6 w-full items-center">
+                  {Array.from({ length: numPages }).map((_, i) => (
+                    <PDFPage 
+                      key={i} 
+                      pdfDoc={pdfDoc} 
+                      pageIndex={i} 
+                      rotation={globalRotation}
+                      placedSignatures={placedSignatures.filter(ps => ps.pageIndex === i)}
+                      setPlacedSignatures={setPlacedSignatures}
+                      allPlacedSignatures={placedSignatures}
+                      signatures={signatures}
+                      addSignatureToPage={addSignatureToPage}
+                      setShowSidebar={setShowSidebar}
+                      setLastClickedPageIndex={setLastClickedPageIndex}
+                    />
                   ))}
                 </div>
-              </div>
-              <div className="p-6 bg-gray-50 border-t flex flex-col gap-3">
-                <button 
-                  onClick={startSigningSelected}
-                  disabled={selectedTokens.length === 0}
-                  className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-lg shadow-lg active:scale-95 transition disabled:opacity-50 disabled:scale-100"
-                >
-                  {selectedTokens.length > 1 ? `确认签署这 ${selectedTokens.length} 个文件` : '确认签署'}
-                </button>
-                <div className="text-center text-sm text-gray-400">签署完成后，文件将自动回传至飞书</div>
-              </div>
-            </div>
-          )}
-          {!file && !loading && larkAttachments.length === 0 && (
-            <div className="w-full aspect-[3/4] max-w-2xl bg-white border-2 border-dashed border-gray-300 rounded-2xl flex flex-col items-center justify-center text-gray-400 p-8 text-center">
-              <Upload size={64} className="mb-4 opacity-10" />
-              <h3 className="text-xl font-medium text-gray-600 mb-2">开始签署文档</h3>
-              <p>请上传 PDF 文件，然后即可在页面上添加您的手写签名。</p>
-            </div>
-          )}
-          {loading && (
-            <div className="flex flex-col items-center gap-4 py-32">
-              <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-              <span className="text-blue-600 font-medium text-lg">正在处理中...</span>
-            </div>
-          )}
-          {pdfDoc && (
-            <div className="relative flex flex-col gap-6 w-full items-center">
-              {Array.from({ length: numPages }).map((_, i) => (
-                <PDFPage 
-                  key={i} 
-                  pdfDoc={pdfDoc} 
-                  pageIndex={i} 
-                  rotation={globalRotation}
-                  placedSignatures={placedSignatures.filter(ps => ps.pageIndex === i)}
-                  setPlacedSignatures={setPlacedSignatures}
-                  allPlacedSignatures={placedSignatures}
-                  signatures={signatures}
-                  addSignatureToPage={addSignatureToPage}
-                  setShowSidebar={setShowSidebar}
-                  setLastClickedPageIndex={setLastClickedPageIndex}
-                />
-              ))}
-            </div>
+              )}
+            </>
           )}
         </section>
       </main>
