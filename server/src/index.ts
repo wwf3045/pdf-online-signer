@@ -90,13 +90,31 @@ app.post('/api/lark/init', (req, res) => {
     return res.status(400).json({ error: 'Missing required parameters (baseToken, tableId, recordId, sourceFieldName, outputFieldName)' });
   }
 
-  const sessionId = Math.random().toString(36).substring(2, 15);
-  larkSessions.set(sessionId, {
-    params: { appId, appSecret, personalBaseToken, baseToken, tableId, recordId, sourceFieldName, outputFieldName },
-    createdAt: Date.now()
-  });
-  saveSessions(larkSessions);
+  // Check if a session already exists for this record
+  let sessionId: string | undefined;
+  for (const [id, session] of larkSessions.entries()) {
+    if (
+      session.params.baseToken === baseToken &&
+      session.params.tableId === tableId &&
+      session.params.recordId === recordId
+    ) {
+      sessionId = id;
+      // Update params in case they changed (e.g. source/output fields)
+      session.params = { appId, appSecret, personalBaseToken, baseToken, tableId, recordId, sourceFieldName, outputFieldName };
+      session.createdAt = Date.now(); // Refresh timestamp
+      break;
+    }
+  }
 
+  if (!sessionId) {
+    sessionId = Math.random().toString(36).substring(2, 15);
+    larkSessions.set(sessionId, {
+      params: { appId, appSecret, personalBaseToken, baseToken, tableId, recordId, sourceFieldName, outputFieldName },
+      createdAt: Date.now()
+    });
+  }
+
+  saveSessions(larkSessions);
   res.json({ sessionId });
 });
 
@@ -114,7 +132,7 @@ app.get('/api/lark/session/:id', (req, res) => {
  */
 app.post('/api/lark/fetch', async (req, res) => {
   try {
-    const { appId, appSecret, personalBaseToken, baseToken, tableId, recordId, sourceFieldName } = req.body;
+    const { appId, appSecret, personalBaseToken, baseToken, tableId, recordId, sourceFieldName, fileToken } = req.body;
     
     if (((!appId || !appSecret) && !personalBaseToken) || !baseToken || !tableId || !recordId || !sourceFieldName) {
       return res.status(400).json({ error: 'Missing required Lark parameters or credentials' });
@@ -145,13 +163,35 @@ app.post('/api/lark/fetch', async (req, res) => {
       return res.status(404).json({ error: `Source field "${sourceFieldName}" is empty or not an attachment field` });
     }
 
-    const fileToken = attachmentField[0].file_token;
-    const fileName = attachmentField[0].name;
+    // If there are multiple files and no specific token requested, return the list for selection
+    if (!fileToken && attachmentField.length > 1) {
+      return res.json({ 
+        multiple: true, 
+        attachments: attachmentField.map((f: any) => ({ 
+          name: f.name, 
+          token: f.file_token,
+          size: f.size,
+          type: f.type
+        })) 
+      });
+    }
+
+    // Use requested token or first one
+    const targetFile = fileToken 
+      ? attachmentField.find((f: any) => f.file_token === fileToken) 
+      : attachmentField[0];
+
+    if (!targetFile) {
+      return res.status(404).json({ error: 'Requested file token not found in attachment field' });
+    }
+
+    const targetToken = targetFile.file_token;
+    const fileName = targetFile.name;
 
     // 2. Download file from Lark
     let fileBuffer: Buffer;
     if (personalBaseToken) {
-      const downloadRes = await axios.get(`https://base-api.feishu.cn/open-apis/drive/v1/medias/${fileToken}/download?extra=%7B%22bitablePerm%22%3A%7B%22tableId%22%3A%22${tableId}%22%7D%7D`, {
+      const downloadRes = await axios.get(`https://base-api.feishu.cn/open-apis/drive/v1/medias/${targetToken}/download?extra=%7B%22bitablePerm%22%3A%7B%22tableId%22%3A%22${tableId}%22%7D%7D`, {
         headers: { Authorization: `Bearer ${personalBaseToken}` },
         responseType: 'arraybuffer'
       });
@@ -161,7 +201,7 @@ app.post('/api/lark/fetch', async (req, res) => {
       const response = await (larkClient.bitable as any).appAttachment.download({
         path: {
           app_token: baseToken,
-          attachment_token: fileToken,
+          attachment_token: targetToken,
         },
       });
       fileBuffer = response as unknown as Buffer;
@@ -283,13 +323,22 @@ app.post('/api/lark/upload', async (req, res) => {
           throw new Error(`Upload Failed - No Token: ${JSON.stringify(uploadRes.data)}`);
         }
 
-        // 2. Update record field with new attachment
-        const updateUrl = `https://base-api.feishu.cn/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/${recordId}`;
-        console.log(`Updating record via PUT to base-api: ${updateUrl}`);
+        // 2. Get existing attachments and append new one
+        const recordUrl = `https://base-api.feishu.cn/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/${recordId}`;
+        const recordRes = await axios.get(recordUrl, {
+          headers: { Authorization: `Bearer ${personalBaseToken}` }
+        });
         
-        const putRes = await axios.put(updateUrl, {
+        const existingAttachments = recordRes.data?.data?.record?.fields?.[outputFieldName] || [];
+        const updatedAttachments = Array.isArray(existingAttachments) 
+          ? [...existingAttachments, { file_token: newFileToken }]
+          : [{ file_token: newFileToken }];
+
+        console.log(`Updating record via PUT to base-api: ${recordUrl}`);
+        
+        const putRes = await axios.put(recordUrl, {
           fields: {
-            [outputFieldName]: [{ file_token: newFileToken }]
+            [outputFieldName]: updatedAttachments
           },
         }, {
           headers: { Authorization: `Bearer ${personalBaseToken}` }
@@ -322,7 +371,21 @@ app.post('/api/lark/upload', async (req, res) => {
       newFileToken = uploadRes.data?.file_token;
       if (!newFileToken) throw new Error('Failed to get file token after upload');
 
-      // 2. Update record field with new attachment
+      // 2. Get existing attachments and append new one
+      const record = await larkClient.bitable.appTableRecord.get({
+        path: {
+          app_token: baseToken,
+          table_id: tableId,
+          record_id: recordId,
+        },
+      });
+      
+      const existingAttachments = (record.data?.record?.fields as any)?.[outputFieldName] || [];
+      const updatedAttachments = Array.isArray(existingAttachments) 
+        ? [...existingAttachments, { file_token: newFileToken }]
+        : [{ file_token: newFileToken }];
+
+      // 3. Update record field with merged attachments
       await larkClient.bitable.appTableRecord.update({
         path: {
           app_token: baseToken,
@@ -331,7 +394,7 @@ app.post('/api/lark/upload', async (req, res) => {
         },
         data: {
           fields: {
-            [outputFieldName]: [{ file_token: newFileToken }]
+            [outputFieldName]: updatedAttachments
           },
         },
       });

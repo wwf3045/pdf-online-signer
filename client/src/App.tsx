@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import SignatureCanvas from 'react-signature-canvas';
 import { Rnd } from 'react-rnd';
-import { Upload, Plus, Download, X, Eraser, Check, Menu, Smartphone, Monitor, RotateCw } from 'lucide-react';
+import { Upload, Plus, Download, X, Eraser, Check, Menu, Smartphone, Monitor, RotateCw, FileText, CheckSquare, Square } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { io, Socket } from 'socket.io-client';
@@ -158,7 +158,7 @@ export default function App() {
     }
   }, [isSigning, isMobileSigningMode, orientationKey, signatureStrokes]);
 
-  const resetUpload = () => {
+  const resetUpload = (clearQueue = true) => {
     setFile(null);
     setPdfDoc(null);
     setNumPages(0);
@@ -166,6 +166,10 @@ export default function App() {
     setPlacedSignatures([]);
     setLoading(false);
     setPageDimensions({});
+    if (clearQueue) {
+      setSigningQueue([]);
+      setSelectedTokens([]);
+    }
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -283,6 +287,22 @@ export default function App() {
     outputFieldName: string;
   } | null>(null);
 
+  const [larkAttachments, setLarkAttachments] = useState<{ name: string, token: string }[]>([]);
+  const [selectedTokens, setSelectedTokens] = useState<string[]>([]);
+  const [signingQueue, setSigningQueue] = useState<string[]>([]);
+
+  const toggleToken = (token: string) => {
+    setSelectedTokens(prev => 
+      prev.includes(token) ? prev.filter(t => t !== token) : [...prev, token]
+    );
+  };
+
+  const startSigningSelected = () => {
+    if (selectedTokens.length === 0 || !larkParams) return;
+    setSigningQueue(selectedTokens);
+    handleLarkFetch(larkParams, selectedTokens[0]);
+  };
+
   const fetchStarted = useRef(false);
 
   // Auto-fetch from Lark if session ID exist
@@ -326,13 +346,13 @@ export default function App() {
     updateDimensions();
   }, [pdfDoc, globalRotation]);
 
-  const handleLarkFetch = async (params: any) => {
+  const handleLarkFetch = async (params: any, fileToken?: string) => {
     setLoading(true);
     try {
       const response = await fetch(`${API_BASE}/api/lark/fetch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
+        body: JSON.stringify({ ...params, fileToken }),
       });
 
       if (!response.ok) {
@@ -340,6 +360,14 @@ export default function App() {
         throw new Error(error.error || '从飞书获取文件失败');
       }
       const data = await response.json();
+
+      if (data.multiple) {
+        setLarkAttachments(data.attachments);
+        setLoading(false);
+        return;
+      }
+
+      setLarkAttachments([]); // Clear list if we are loading a file
       setUploadId(data.id);
 
       // Load PDF locally
@@ -352,6 +380,14 @@ export default function App() {
         standardFontDataUrl: STANDARD_FONT_DATA_URL,
       });
       const pdf = await loadingTask.promise;
+      
+      const dimensions: { [key: number]: { width: number, height: number } } = {};
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 1 });
+        dimensions[i - 1] = { width: viewport.width, height: viewport.height };
+      }
+      setPageDimensions(dimensions);
       
       setPdfDoc(pdf);
       setNumPages(pdf.numPages);
@@ -398,14 +434,24 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           id: signedId,
-          sessionId: queryParams.get('larkSession'), // Pass session ID to invalidate it
+          // Only invalidate session if it's the last file in queue (or if no queue)
+          sessionId: (signingQueue.length <= 1) ? queryParams.get('larkSession') : null,
           ...larkParams
         }),
       });
 
       if (uploadRes.ok) {
-        alert('恭喜！签名已成功合成并提交至飞书多维表格。');
-        resetUpload(); // Files are deleted on server, reset local state
+        if (signingQueue.length > 1) {
+          const nextQueue = signingQueue.slice(1);
+          alert(`恭喜！当前文件已上传。还剩 ${nextQueue.length} 个文件待签署。`);
+          resetUpload(false);
+          setSigningQueue(nextQueue);
+          handleLarkFetch(larkParams, nextQueue[0]);
+        } else {
+          setSigningQueue([]);
+          alert('恭喜！签名已成功合成并提交至飞书多维表格。');
+          resetUpload(); // Files are deleted on server, reset local state
+        }
       } else {
         const error = await uploadRes.json();
         throw new Error(error.error || '回传飞书失败');
@@ -612,7 +658,55 @@ export default function App() {
         )}
 
         <section className="flex-1 flex flex-col items-center gap-4">
-          {!file && !loading && (
+          {!file && !loading && larkAttachments.length > 0 && (
+            <div className="w-full max-w-2xl bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-300">
+              <div className="bg-gray-50 border-b px-6 py-4 flex justify-between items-center">
+                <h3 className="text-lg font-bold text-gray-800">选择待签署文件 ({larkAttachments.length})</h3>
+                <div className="text-sm text-gray-500 font-medium">发现多个附件，请选择</div>
+              </div>
+              <div className="p-4 max-h-[400px] overflow-y-auto">
+                <div className="grid gap-3">
+                  {larkAttachments.map((att) => (
+                    <div 
+                      key={att.token}
+                      onClick={() => toggleToken(att.token)}
+                      className={cn(
+                        "flex items-center gap-4 p-4 rounded-xl border-2 transition cursor-pointer active:scale-[0.98]",
+                        selectedTokens.includes(att.token) 
+                          ? "border-blue-500 bg-blue-50/50" 
+                          : "border-gray-100 hover:border-blue-200 bg-white"
+                      )}
+                    >
+                      <div className={cn(
+                        "w-6 h-6 rounded flex items-center justify-center border-2 transition",
+                        selectedTokens.includes(att.token)
+                          ? "bg-blue-600 border-blue-600 text-white"
+                          : "border-gray-300 text-transparent"
+                      )}>
+                        <Check size={14} strokeWidth={4} />
+                      </div>
+                      <FileText size={24} className="text-blue-500" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-bold text-gray-800 truncate">{att.name}</div>
+                        <div className="text-xs text-gray-400">PDF 文档</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="p-6 bg-gray-50 border-t flex flex-col gap-3">
+                <button 
+                  onClick={startSigningSelected}
+                  disabled={selectedTokens.length === 0}
+                  className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-lg shadow-lg active:scale-95 transition disabled:opacity-50 disabled:scale-100"
+                >
+                  {selectedTokens.length > 1 ? `确认签署这 ${selectedTokens.length} 个文件` : '确认签署'}
+                </button>
+                <div className="text-center text-sm text-gray-400">签署完成后，文件将自动回传至飞书</div>
+              </div>
+            </div>
+          )}
+          {!file && !loading && larkAttachments.length === 0 && (
             <div className="w-full aspect-[3/4] max-w-2xl bg-white border-2 border-dashed border-gray-300 rounded-2xl flex flex-col items-center justify-center text-gray-400 p-8 text-center">
               <Upload size={64} className="mb-4 opacity-10" />
               <h3 className="text-xl font-medium text-gray-600 mb-2">开始签署文档</h3>
