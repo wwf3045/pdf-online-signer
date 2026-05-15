@@ -156,13 +156,15 @@ pm2 start "npm run dev" --name pdf-frontend
 ```nginx
 server {
     listen 80;
+    listen [::]:80 ipv6only=on;
     server_name your-domain.com; # 替换为你的域名
     return 301 https://$host$request_uri; # 强制跳转 HTTPS
-}
+    }
 
-server {
+    server {
     listen 443 ssl;
-    server_name your-domain.com;
+    listen [::]:443 ssl ipv6only=on;
+    server_name your-domain.com; # 替换为你的域名
 
     # SSL 证书路径
     ssl_certificate     /etc/nginx/cert/fullchain.cer;

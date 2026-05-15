@@ -7,6 +7,7 @@ import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { io, Socket } from 'socket.io-client';
 import { QRCodeSVG } from 'qrcode.react';
+import { getApiBase, getSocketBase, getMobileSignUrl } from './config';
 
 // Setup PDF.js worker and CMap for Chinese characters
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
@@ -69,38 +70,34 @@ export default function App() {
 
   // Fetch server config on load
   useEffect(() => {
-    const configUrl = window.location.hostname === 'localhost' 
-      ? 'http://localhost:3001/api/config' 
-      : '/api/config'; // 公网环境下通过相对路径访问
+    const configUrl = `${getApiBase()}/api/config?t=${Date.now()}`;
+    console.log('[App] Fetching initial config from:', configUrl);
       
     fetch(configUrl)
-      .then(res => res.json())
+      .then(async res => {
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(`HTTP ${res.status}: ${text.substring(0, 100)}`);
+        }
+        return res.json();
+      })
       .then(data => setServerIp(data.localIp))
-      .catch((err) => {
-        console.warn('无法获取服务器配置:', err);
+      .catch(async (err) => {
+        console.error('[App] Config fetch failed:', err);
+        // 如果是因为返回了 HTML 而解析失败，尝试打印出 HTML 片段
+        if (err instanceof SyntaxError) {
+          try {
+            const res = await fetch(configUrl);
+            const text = await res.text();
+            console.error('[App] Server returned HTML instead of JSON. Snippet:', text.substring(0, 200));
+          } catch (e) {}
+        }
         setServerIp(window.location.hostname);
       });
   }, []);
 
-  const API_BASE = useMemo(() => {
-    if (window.location.hostname !== 'localhost') {
-      // 公网环境：由于 Nginx 反代了 /api，直接使用当前域名
-      return `${window.location.protocol}//${window.location.host}`;
-    }
-    return 'http://localhost:3001';
-  }, []);
-
-  const mobileSignUrl = useMemo(() => {
-    if (window.location.hostname !== 'localhost') {
-      // 公网环境：二维码直接指向当前域名 URL
-      return `${window.location.protocol}//${window.location.host}${window.location.pathname}?session=${desktopSessionId}`;
-    }
-    // 本地开发环境：使用自动侦测的服务器 IP
-    const host = serverIp || window.location.hostname;
-    const protocol = window.location.protocol;
-    const port = window.location.port || '5173'; 
-    return `${protocol}//${host}:${port}${window.location.pathname}?session=${desktopSessionId}`;
-  }, [serverIp, desktopSessionId]);
+  const API_BASE = getApiBase();
+  const mobileSignUrl = getMobileSignUrl(desktopSessionId, serverIp);
 
   // Initialize Socket.io
   useEffect(() => {
@@ -109,7 +106,7 @@ export default function App() {
       ? { secure: true, reconnection: true, rejectUnauthorized: false }
       : {};
       
-    socketRef.current = io(API_BASE, socketOptions);
+    socketRef.current = io(getSocketBase(), socketOptions);
     
     if (isMobileSigningMode) {
       socketRef.current.emit('join-session', mobileSessionId);
@@ -125,7 +122,7 @@ export default function App() {
     return () => {
       socketRef.current?.disconnect();
     };
-  }, [API_BASE, desktopSessionId, isMobileSigningMode, mobileSessionId]);
+  }, [desktopSessionId, isMobileSigningMode, mobileSessionId]);
 
   // 监听旋转，强制重新初始化签名板以修复偏移
   useEffect(() => {
@@ -315,17 +312,25 @@ export default function App() {
       fetchStarted.current = true;
       // 1. Fetch parameters from session
       setLoading(true);
-      fetch(`${API_BASE}/api/lark/session/${lSessionId}`)
-        .then(res => {
-          if (!res.ok) throw new Error('Session 已过期或不存在');
+      fetch(`${API_BASE}/api/lark/session/${lSessionId}?t=${Date.now()}`)
+        .then(async res => {
+          if (!res.ok) {
+            const text = await res.text();
+            throw new Error(`HTTP ${res.status}: ${text.substring(0, 100)}`);
+          }
           return res.json();
         })
         .then(params => {
           setLarkParams(params);
           handleLarkFetch(params);
         })
-        .catch(err => {
+        .catch(async err => {
           console.error('Session 获取失败:', err);
+          if (err instanceof SyntaxError) {
+             const res = await fetch(`${API_BASE}/api/lark/session/${lSessionId}`);
+             const text = await res.text();
+             console.error('[App] Session response was HTML:', text.substring(0, 200));
+          }
           alert(`进入飞书签字模式失败: ${err.message}`);
           setLoading(false);
         });
@@ -372,11 +377,10 @@ export default function App() {
       setLarkAttachments([]); // Clear list if we are loading a file
       setUploadId(data.id);
 
-      // Load PDF locally
-      const pdfRes = await fetch(`${API_BASE}/api/uploads/${data.id}`);
-      const arrayBuffer = await pdfRes.arrayBuffer();
+      // Load PDF locally using URL for better performance (streaming)
+      const pdfUrl = `${API_BASE}/api/uploads/${data.id}`;
       const loadingTask = pdfjsLib.getDocument({ 
-        data: arrayBuffer,
+        url: pdfUrl,
         cMapUrl: CMAP_URL,
         cMapPacked: CMAP_PACKED,
         standardFontDataUrl: STANDARD_FONT_DATA_URL,

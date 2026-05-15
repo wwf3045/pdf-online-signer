@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -92,20 +93,27 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-// Get local IP address
-function getLocalIp() {
+// Get local IP addresses (both IPv4 and IPv6)
+function getLocalIps() {
   const interfaces = os.networkInterfaces();
+  const ips: { ipv4: string[], ipv6: string[] } = { ipv4: [], ipv6: [] };
   for (const name of Object.keys(interfaces)) {
     for (const iface of interfaces[name]!) {
-      if (iface.family === 'IPv4' && !iface.internal) {
-        return iface.address;
+      if (!iface.internal) {
+        if (iface.family === 'IPv4') {
+          ips.ipv4.push(iface.address);
+        } else if (iface.family === 'IPv6') {
+          ips.ipv6.push(iface.address);
+        }
       }
     }
   }
-  return 'localhost';
+  return ips;
 }
 
-const localIp = getLocalIp();
+const localIps = getLocalIps();
+const primaryIp = localIps.ipv4[0] || localIps.ipv6[0] || 'localhost';
+
 const io = new Server(httpServer, {
   cors: {
     origin: "*",
@@ -114,13 +122,19 @@ const io = new Server(httpServer, {
 });
 
 const port = process.env.PORT || 3001;
+const host = process.env.HOST || '::';
 
+app.use(compression());
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
-app.use('/api/uploads', express.static(uploadsDir));
+app.use('/api/uploads', express.static(uploadsDir, {
+  maxAge: '1h',
+  etag: true,
+  lastModified: true
+}));
 
 app.get('/api/config', (req, res) => {
-  res.json({ localIp, port });
+  res.json({ localIp: primaryIp, localIps, port });
 });
 
 // --- Lark Session Management ---
@@ -606,6 +620,6 @@ app.post('/api/sign', async (req, res) => {
   }
 });
 
-httpServer.listen(Number(port), '0.0.0.0', () => {
-  console.log(`Server running at http://0.0.0.0:${port}`);
+httpServer.listen({ port: Number(port), host: host, ipv6Only: host === '::' ? false : undefined }, () => {
+  console.log(`Server running at http://${host === '::' ? '[::]' : host}:${port} (Dual-stack: ${host === '::'})`);
 });
