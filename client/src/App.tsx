@@ -598,6 +598,7 @@ export default function App() {
               <Menu size={24} />
             </button>
           )}
+          <img src="/favicon.png" alt="Logo" className="w-8 h-8 md:w-9 md:h-9 object-contain" />
           <h1 className="text-xl md:text-2xl font-bold text-gray-900">PDF 在线签名</h1>
         </div>
         <div className="flex gap-2 md:gap-4">
