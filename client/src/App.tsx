@@ -1,8 +1,8 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import SignatureCanvas from 'react-signature-canvas';
 import { Rnd } from 'react-rnd';
-import { Upload, Plus, Download, X, Eraser, Check, Menu, Smartphone, Monitor, RotateCw, FileText, CheckSquare, Square, PartyPopper } from 'lucide-react';
+import { Upload, Plus, Download, X, Eraser, Check, Menu, Smartphone, Monitor, RotateCw, FileText, PartyPopper } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { io, Socket } from 'socket.io-client';
@@ -611,7 +611,7 @@ export default function App() {
           {file && (
             <>
               <button 
-                onClick={resetUpload}
+                onClick={() => resetUpload()}
                 className="hidden md:flex items-center gap-2 bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300 transition text-sm"
               >
                 <X size={18} />
@@ -867,7 +867,7 @@ export default function App() {
   );
 }
 
-function PDFPage({ pdfDoc, pageIndex, rotation, placedSignatures, setPlacedSignatures, allPlacedSignatures, signatures, addSignatureToPage, setShowSidebar, setLastClickedPageIndex }: any) {
+function PDFPage({ pdfDoc, pageIndex, rotation, placedSignatures, setPlacedSignatures, allPlacedSignatures, signatures, setShowSidebar, setLastClickedPageIndex }: any) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [renderDimensions, setRenderDimensions] = useState({ width: 0, height: 0 });
